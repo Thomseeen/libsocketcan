@@ -66,6 +66,8 @@
 #define GET_BERR_COUNTER 7
 #define GET_XSTATS 8
 #define GET_LINK_STATS 9
+#define GET_DATA_BITTIMING 10
+#define GET_DATA_BITTIMING_CONST 11
 
 struct get_req {
 	struct nlmsghdr n;
@@ -84,6 +86,7 @@ struct req_info {
 	__u32 restart_ms;
 	struct can_ctrlmode *ctrlmode;
 	struct can_bittiming *bittiming;
+	struct can_bittiming *dbittiming;
 };
 
 /**
@@ -487,6 +490,16 @@ static int do_get_nl_link(int fd, __u8 acquire, const char *name, void *res)
 					fprintf(stderr, "no bittiming data found\n");
 
 				break;
+			case GET_DATA_BITTIMING:
+				if (can_attr[IFLA_CAN_DATA_BITTIMING]) {
+					memcpy(res,
+					       RTA_DATA(can_attr[IFLA_CAN_DATA_BITTIMING]),
+					       sizeof(struct can_bittiming));
+					ret = 0;
+				} else
+					fprintf(stderr, "no data bittiming data found\n");
+
+				break;
 			case GET_CTRLMODE:
 				if (can_attr[IFLA_CAN_CTRLMODE]) {
 					memcpy(res,
@@ -516,6 +529,16 @@ static int do_get_nl_link(int fd, __u8 acquire, const char *name, void *res)
 					ret = 0;
 				} else
 					fprintf(stderr, "no bittiming_const data found\n");
+
+				break;
+			case GET_DATA_BITTIMING_CONST:
+				if (can_attr[IFLA_CAN_DATA_BITTIMING_CONST]) {
+					memcpy(res,
+					       RTA_DATA(can_attr[IFLA_CAN_DATA_BITTIMING_CONST]),
+					       sizeof(struct can_bittiming_const));
+					ret = 0;
+				} else
+					fprintf(stderr, "no data bittiming_const data found\n");
 
 				break;
 			case GET_BERR_COUNTER:
@@ -645,6 +668,12 @@ static int do_set_nl_link(int fd, __u8 if_state, const char *name,
 		if (req_info->bittiming != NULL) {
 			addattr_l(&req.n, 1024, IFLA_CAN_BITTIMING,
 				  req_info->bittiming,
+				  sizeof(struct can_bittiming));
+		}
+
+		if (req_info->dbittiming != NULL) {
+			addattr_l(&req.n, 1024, IFLA_CAN_DATA_BITTIMING,
+				  req_info->dbittiming,
 				  sizeof(struct can_bittiming));
 		}
 
@@ -878,7 +907,7 @@ int can_set_ctrlmode(const char *name, struct can_ctrlmode *cm)
  * line. e.g. "can0"
  * @param bt pointer to a can_bittiming struct
  *
- * This sets the bittiming of the can device. This is for advantage usage. In
+ * This sets the bittiming of the can device. This is for advanced usage. In
  * normal cases you should use can_set_bitrate to simply define the bitrate and
  * let the driver automatically calculate the bittiming. You will only need this
  * function if you wish to define the bittiming in expert mode with fully
@@ -918,13 +947,71 @@ int can_set_bittiming(const char *name, struct can_bittiming *bt)
 
 /**
  * @ingroup extern
+ * can_set_fd_bittimings - setup the bittimings for can fd.
+ *
+ * @param name name of the can fd device. This is the netdev name, as ifconfig -a shows
+ * in your system. usually it contains prefix "can" and the numer of the can
+ * line. e.g. "can0"
+ * @param bt pointer to a can_bittiming struct used for arbitration phase
+ * @param dbt pointer to a can_bittiming struct used for data phase
+ *
+ * By calling this function can fd mode is automatically set.
+ * 
+ * This sets the bittiming of the can fd device. This is for advanced usage. In
+ * normal cases you should use can_set_fd_bitrates to simply define the bitrate and
+ * let the driver automatically calculate the bittiming. You will only need this
+ * function if you wish to define the bittimings in expert mode with fully
+ * manually defined timing values.
+ * You have to define the bittiming structs yourself. a can_bittiming struct
+ * consists of:
+ *
+ * @code
+ * struct can_bittiming {
+ *	__u32 bitrate;
+ *	__u32 sample_point;
+ *	__u32 tq;
+ *	__u32 prop_seg;
+ *	__u32 phase_seg1;
+ *	__u32 phase_seg2;
+ *	__u32 sjw;
+ *	__u32 brp;
+ * }
+ * @endcode
+ *
+ * to define a customized bittiming, you have to define tq, prop_seq,
+ * phase_seg1, phase_seg2 and sjw. See http://www.can-cia.org/index.php?id=88
+ * for more information about bittiming and synchronizations on can bus.
+ *
+ * @return 0 if success
+ * @return -1 if failed
+ */
+
+int can_set_fd_bittimings(const char *name, struct can_bittiming *bt, struct can_bittiming *dbt)
+{
+	struct can_ctrlmode cm;
+    memset(&cm, 0, sizeof(cm));
+    cm.mask = CAN_CTRLMODE_FD;
+    cm.flags = CAN_CTRLMODE_FD;
+
+    /* netlink expects both, timings and the fd flag, to always be set simultaneously */
+	struct req_info req_info = {
+		.bittiming = bt,
+		.dbittiming = dbt,
+		.ctrlmode = &cm
+	};
+
+	return set_link(name, 0, &req_info);
+}
+
+/**
+ * @ingroup extern
  * can_set_bitrate - setup the bitrate.
  *
  * @param name name of the can device. This is the netdev name, as ifconfig -a shows
  * in your system. usually it contains prefix "can" and the numer of the can
  * line. e.g. "can0"
  * @param bitrate bitrate of the can bus
- *
+
  * This is the recommended way to setup the bus bit timing. You only have to
  * give a bitrate value here. The exact bit timing will be calculated
  * automatically. To use this function, make sure that CONFIG_CAN_CALC_BITTIMING
@@ -943,6 +1030,43 @@ int can_set_bitrate(const char *name, __u32 bitrate)
 	bt.bitrate = bitrate;
 
 	return can_set_bittiming(name, &bt);
+}
+
+/**
+ * @ingroup extern
+ * can_set_fd_bitrates - setup the bitrates for can fd.
+ *
+ * @param name name of the can fd device. This is the netdev name, as ifconfig -a shows
+ * in your system. usually it contains prefix "can" and the numer of the can
+ * line. e.g. "can0"
+ * @param bitrate bitrate of the can fd bus during arbitration phase 
+ * @param dbitrate bitrate of the can fd bus during data phase
+ *
+ * By calling this function can fd mode is automatically set.
+ *
+ * This is the recommended way to setup the bus bit timings. You only have to
+ * give both bitrate values here. The exact bit timings will be calculated
+ * automatically. To use this function, make sure that CONFIG_CAN_CALC_BITTIMING
+ * is set to y in your kernel configuration. Bitrate can be a value between
+ * 1000(1kbit/s) and 1000000(1000kbit/s) for arbitration phase. For data phase
+ * bitrate can be a value between 1000(1kbit/s) and 14049876(1kbit/s).
+ *
+ * @return 0 if success
+ * @return -1 if failed
+ */
+
+int can_set_fd_bitrates(const char *name, __u32 bitrate, __u32 dbitrate)
+{
+	struct can_bittiming bt;
+	struct can_bittiming dbt;
+
+	memset(&bt, 0, sizeof(bt));
+	bt.bitrate = bitrate;
+
+	memset(&dbt, 0, sizeof(dbt));
+	dbt.bitrate = dbitrate;
+
+	return can_set_fd_bittimings(name, &bt, &dbt);
 }
 
 /**
@@ -972,6 +1096,44 @@ int can_set_bitrate_samplepoint(const char *name, __u32 bitrate,
 	bt.sample_point = sample_point;
 
 	return can_set_bittiming(name, &bt);
+}
+
+/**
+ * @ingroup extern
+ * can_set_fd_bitrates_samplepoints - setup the bitrates.
+ *
+ * @param name name of the can fd device. This is the netdev name, as ifconfig -a shows
+ * in your system. usually it contains prefix "can" and the numer of the can
+ * line. e.g. "can0"
+ * @param bitrate bitrate of the can fd bus during arbitration phase
+ * @param sample_point sample point value of the can fd bus during arbitration phase
+ * @param dbitrate bitrate of the can fd bus during data phase
+ * @param dsample_point sample point value of the can fd bus during data phase
+ * 
+ * By calling this function can fd mode is automatically set.
+ *
+ * This one is similar to can_set_fd_bitrates, only you can additionally set up the
+ * time points for sampling (sample point) customly instead of using the
+ * CIA recommended value. sample_point can be a value between 0 and 999.
+ *
+ * @return 0 if success
+ * @return -1 if failed
+ */
+int can_set_fd_bitrates_samplepoints(const char *name, __u32 bitrate,
+				__u32 sample_point, __u32 dbitrate, __u32 dsample_point)
+{
+	struct can_bittiming bt;
+	struct can_bittiming dbt;
+
+	memset(&bt, 0, sizeof(bt));
+	bt.bitrate = bitrate;
+	bt.sample_point = sample_point;
+
+	memset(&dbt, 0, sizeof(dbt));
+	dbt.bitrate = dbitrate;
+	dbt.sample_point = dsample_point;
+
+	return can_set_fd_bittimings(name, &bt, &dbt);
 }
 
 /**
@@ -1040,7 +1202,9 @@ int can_get_restart_ms(const char *name, __u32 *restart_ms)
  * line. e.g. "can0"
  * @param bt pointer to the bittiming struct.
  *
- * This one stores the current bittiming configuration.
+ * This one stores the current bittiming configuration. For can fd it holds
+ * the bittiming for the arbitration phase. To get the bittiming for the data phase
+ * use can_get_data_bittimings.
  *
  * Please see can_set_bittiming for more information about bit timing.
  *
@@ -1050,6 +1214,28 @@ int can_get_restart_ms(const char *name, __u32 *restart_ms)
 int can_get_bittiming(const char *name, struct can_bittiming *bt)
 {
 	return get_link(name, GET_BITTIMING, bt);
+}
+
+/**
+ * @ingroup extern
+ * can_get_data_bittimings - get the current data phase bittimnig configuration.
+ *
+ * @param name name of the can fd device. This is the netdev name, as ifconfig -a shows
+ * in your system. usually it contains prefix "can" and the numer of the can
+ * line. e.g. "can0"
+ * @param bt pointer to the bittiming struct.
+ *
+ * This one stores the current data phase bittiming configuration. To get the bittiming
+ * for the arbitration phase use can_get_bittiming.
+ *
+ * Please see can_set_fd_bittimings for more information about bit timing.
+ *
+ * @return 0 if success
+ * @return -1 if failed
+ */
+int can_get_data_bittiming(const char *name, struct can_bittiming *bt)
+{
+	return get_link(name, GET_DATA_BITTIMING, bt);
 }
 
 /**
@@ -1104,8 +1290,10 @@ int can_get_clock(const char *name, struct can_clock *clock)
  * line. e.g. "can0"
  * @param btc pointer to the bittiming constant struct.
  *
- * This one stores the hardware dependent bittiming constant. The
- * can_bittiming_const struct consists:
+ * This one stores the hardware dependent bittiming constant. For can fd it holds
+ * the bittiming constant for the arbitration phase. To get the bittiming constant
+ * for the data phase use can_get_data_bittiming_const.The can_bittiming_const
+ * struct consists:
  *
  * @code
  * struct can_bittiming_const {
@@ -1132,6 +1320,43 @@ int can_get_bittiming_const(const char *name, struct can_bittiming_const *btc)
 	return get_link(name, GET_BITTIMING_CONST, btc);
 }
 
+/**
+ * @ingroup extern
+ * can_get_data_bittiming_const - get the current data phase bittimnig configuration.
+ *
+ * @param name name of the can fd device. This is the netdev name, as ifconfig -a shows
+ * in your system. usually it contains prefix "can" and the numer of the can
+ * line. e.g. "can0"
+ * @param btc pointer to the bittiming constant struct.
+ *
+ * This one stores the hardware dependent bittiming constant for the data phase. To get
+ * the bittiming constant for the arbitration phase use can_get_bittiming.
+ * The can_bittiming_const struct consists:
+ *
+ * @code
+ * struct can_bittiming_const {
+ *	char name[16];
+ *	__u32 tseg1_min;
+ *	__u32 tseg1_max;
+ *	__u32 tseg2_min;
+ *	__u32 tseg2_max;
+ *	__u32 sjw_max;
+ *	__u32 brp_min;
+ *	__u32 brp_max;
+ *	__u32 brp_inc;
+ *	};
+ * @endcode
+ *
+ * The information in this struct is used to calculate the bus bit timing
+ * automatically.
+ *
+ * @return 0 if success
+ * @return -1 if failed
+ */
+int can_get_data_bittiming_const(const char *name, struct can_bittiming_const *btc)
+{
+	return get_link(name, GET_DATA_BITTIMING_CONST, btc);
+}
 
 /**
  * @ingroup extern
