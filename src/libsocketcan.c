@@ -169,26 +169,26 @@ static int addattr_l(struct nlmsghdr *n, size_t maxlen, int type,
 static int send_mod_request(int fd, struct nlmsghdr *n)
 {
 	int status;
-	struct sockaddr_nl nladdr;
+	char buf[16384];
 	struct nlmsghdr *h;
+
+	struct sockaddr_nl nladdr = {
+		.nl_family = AF_NETLINK,
+		.nl_pid = 0,
+        .nl_groups = 0
+	};
 
 	struct iovec iov = {
 		.iov_base = (void *)n,
 		.iov_len = n->nlmsg_len
 	};
+
 	struct msghdr msg = {
 		.msg_name = &nladdr,
 		.msg_namelen = sizeof(nladdr),
 		.msg_iov = &iov,
 		.msg_iovlen = 1,
-	};
-	char buf[16384];
-
-	memset(&nladdr, 0, sizeof(nladdr));
-
-	nladdr.nl_family = AF_NETLINK;
-	nladdr.nl_pid = 0;
-	nladdr.nl_groups = 0;
+	};	
 
 	n->nlmsg_seq = 0;
 	n->nlmsg_flags |= NLM_F_ACK;
@@ -253,17 +253,15 @@ static int send_mod_request(int fd, struct nlmsghdr *n)
  */
 static int send_dump_request(int fd, const char *name, int family, int type)
 {
-	struct get_req req;
+	struct get_req req = {
+		.n.nlmsg_len = sizeof(req),
+		.n.nlmsg_type = type,
+		.n.nlmsg_flags = NLM_F_REQUEST,
+		.n.nlmsg_pid = 0,
+		.n.nlmsg_seq = 0,
+		.i.ifi_family = family
+	};
 
-	memset(&req, 0, sizeof(req));
-
-	req.n.nlmsg_len = sizeof(req);
-	req.n.nlmsg_type = type;
-	req.n.nlmsg_flags = NLM_F_REQUEST;
-	req.n.nlmsg_pid = 0;
-	req.n.nlmsg_seq = 0;
-
-	req.i.ifi_family = family;
 	/*
 	 * If name is null, set flag to dump link information from all
 	 * interfaces otherwise, just dump specified interface's link
@@ -297,7 +295,11 @@ static int open_nl_sock()
 	int sndbuf = 32768;
 	int rcvbuf = 32768;
 	unsigned int addr_len;
-	struct sockaddr_nl local;
+
+	struct sockaddr_nl local = {
+		.nl_family = AF_NETLINK,
+		.nl_groups = 0
+	};
 
 	fd = socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE);
 	if (fd < 0) {
@@ -308,10 +310,6 @@ static int open_nl_sock()
 	setsockopt(fd, SOL_SOCKET, SO_SNDBUF, (void *)&sndbuf, sizeof(sndbuf));
 
 	setsockopt(fd, SOL_SOCKET, SO_RCVBUF, (void *)&rcvbuf, sizeof(rcvbuf));
-
-	memset(&local, 0, sizeof(local));
-	local.nl_family = AF_NETLINK;
-	local.nl_groups = 0;
 
 	if (bind(fd, (struct sockaddr *)&local, sizeof(local)) < 0) {
 		perror("Cannot bind netlink socket");
@@ -615,18 +613,16 @@ static int get_link(const char *name, __u8 acquire, void *res)
 static int do_set_nl_link(int fd, __u8 if_state, const char *name,
 			  struct req_info *req_info)
 {
-	struct set_req req;
+	struct set_req req = {
+		.n.nlmsg_len = NLMSG_LENGTH(sizeof(struct ifinfomsg)),
+	    .n.nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK,
+	    .n.nlmsg_type = RTM_NEWLINK,
+	    .i.ifi_family = 0,
+	    .i.ifi_index = if_nametoindex(name)
+	};
 
 	const char *type = "can";
 
-	memset(&req, 0, sizeof(req));
-
-	req.n.nlmsg_len = NLMSG_LENGTH(sizeof(struct ifinfomsg));
-	req.n.nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
-	req.n.nlmsg_type = RTM_NEWLINK;
-	req.i.ifi_family = 0;
-
-	req.i.ifi_index = if_nametoindex(name);
 	if (req.i.ifi_index == 0) {
 		fprintf(stderr, "Cannot find device \"%s\"\n", name);
 		return -1;
@@ -878,11 +874,11 @@ int can_set_restart_ms(const char *name, __u32 restart_ms)
  * pseudocode will turn the loopback mode on and listenonly mode off:
  *
  * @code
- * struct can_ctrlmode cm;
- * memset(&cm, 0, sizeof(cm));
- * cm.mask = CAN_CTRLMODE_LOOPBACK | CAN_CTRLMODE_LISTENONLY;
- * cm.flags = CAN_CTRLMODE_LOOPBACK;
- * can_set_ctrlmode(candev, &cm);
+ * struct can_ctrlmode cm = {
+ *	.mask = CAN_CTRLMODE_LOOPBACK | CAN_CTRLMODE_LISTENONLY,
+ *	.flags = CAN_CTRLMODE_LOOPBACK,
+ * };
+ * can_set_ctrlmode(candev, &cm)
  * @endcode
  *
  * @return 0 if success
@@ -988,10 +984,10 @@ int can_set_bittiming(const char *name, struct can_bittiming *bt)
 
 int can_set_fd_bittimings(const char *name, struct can_bittiming *bt, struct can_bittiming *dbt)
 {
-	struct can_ctrlmode cm;
-    memset(&cm, 0, sizeof(cm));
-    cm.mask = CAN_CTRLMODE_FD;
-    cm.flags = CAN_CTRLMODE_FD;
+	struct can_ctrlmode cm = {
+		.mask = CAN_CTRLMODE_FD,
+        .flags = CAN_CTRLMODE_FD
+	};
 
     /* netlink expects both, timings and the fd flag, to always be set simultaneously */
 	struct req_info req_info = {
@@ -1024,10 +1020,9 @@ int can_set_fd_bittimings(const char *name, struct can_bittiming *bt, struct can
 
 int can_set_bitrate(const char *name, __u32 bitrate)
 {
-	struct can_bittiming bt;
-
-	memset(&bt, 0, sizeof(bt));
-	bt.bitrate = bitrate;
+	struct can_bittiming bt = {
+		.bitrate = bitrate
+	};
 
 	return can_set_bittiming(name, &bt);
 }
@@ -1057,14 +1052,13 @@ int can_set_bitrate(const char *name, __u32 bitrate)
 
 int can_set_fd_bitrates(const char *name, __u32 bitrate, __u32 dbitrate)
 {
-	struct can_bittiming bt;
-	struct can_bittiming dbt;
+	struct can_bittiming bt = {
+		.bitrate = bitrate
+	};
 
-	memset(&bt, 0, sizeof(bt));
-	bt.bitrate = bitrate;
-
-	memset(&dbt, 0, sizeof(dbt));
-	dbt.bitrate = dbitrate;
+	struct can_bittiming dbt = {
+	    .bitrate = dbitrate	
+	};
 
 	return can_set_fd_bittimings(name, &bt, &dbt);
 }
@@ -1089,11 +1083,10 @@ int can_set_fd_bitrates(const char *name, __u32 bitrate, __u32 dbitrate)
 int can_set_bitrate_samplepoint(const char *name, __u32 bitrate,
 				__u32 sample_point)
 {
-	struct can_bittiming bt;
-
-	memset(&bt, 0, sizeof(bt));
-	bt.bitrate = bitrate;
-	bt.sample_point = sample_point;
+	struct can_bittiming bt = {
+		.bitrate = bitrate,
+		.sample_point = sample_point
+	};
 
 	return can_set_bittiming(name, &bt);
 }
@@ -1122,16 +1115,14 @@ int can_set_bitrate_samplepoint(const char *name, __u32 bitrate,
 int can_set_fd_bitrates_samplepoints(const char *name, __u32 bitrate,
 				__u32 sample_point, __u32 dbitrate, __u32 dsample_point)
 {
-	struct can_bittiming bt;
-	struct can_bittiming dbt;
-
-	memset(&bt, 0, sizeof(bt));
-	bt.bitrate = bitrate;
-	bt.sample_point = sample_point;
-
-	memset(&dbt, 0, sizeof(dbt));
-	dbt.bitrate = dbitrate;
-	dbt.sample_point = dsample_point;
+	struct can_bittiming bt = {
+		.bitrate = bitrate,
+		.sample_point = sample_point
+	};
+	struct can_bittiming dbt = {
+		.bitrate = dbitrate,
+		.sample_point = dsample_point
+	};
 
 	return can_set_fd_bittimings(name, &bt, &dbt);
 }
